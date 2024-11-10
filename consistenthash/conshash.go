@@ -1,11 +1,6 @@
 // Copyright (c) 2024 Rishabh Parekh
-// MIT License
-
 // Use of this source code is governed by an MIT license that can be
 // found in the LICENSE file.
-
-
-
 
 // consistenthash package provides a consistent hash algorithm implementation.
 package consistenthash

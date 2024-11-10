@@ -4,9 +4,6 @@
 // Use of this source code is governed by an MIT license that can be
 // found in the LICENSE file.
 
-
-
-
 package main
 
 import (
@@ -19,11 +16,11 @@ import (
 	"serverpool"
 )
 
-type mockServerPool[T comparable] struct {
-	nodes map[int]serverpool.Node[T]
+type mockServerPool[T,O comparable] struct {
+	nodes map[int]serverpool.Node[T,O]
 }
 
-func (m *mockServerPool[T]) AddNode(node serverpool.Node[T], bucket int) error {
+func (m *mockServerPool[T,O]) AddNode(node serverpool.Node[T,O], bucket int) error {
 	if _, exists := m.nodes[bucket]; exists {
 		return errors.New("bucket already exists")
 	}
@@ -31,24 +28,24 @@ func (m *mockServerPool[T]) AddNode(node serverpool.Node[T], bucket int) error {
 	return nil
 }
 
-func (m *mockServerPool[T]) RemoveNode(node serverpool.Node[T]) (int, error) {
+func (m *mockServerPool[T,O]) RemoveNode(node serverpool.Node[T,O]) (int, serverpool.Node[T,O], error) {
 	for bucket, n := range m.nodes {
 		if n == node {
 			delete(m.nodes, bucket)
-			return bucket, nil
+			return bucket, n, nil
 		}
 	}
-	return 0, errors.New("node not found")
+	return 0, nil, errors.New("node not found")
 }
 
-func (m *mockServerPool[T]) GetNode(bucket int) (serverpool.Node[T], bool) {
+func (m *mockServerPool[T,O]) GetNode(bucket int) (serverpool.Node[T,O], bool) {
 	node, exists := m.nodes[bucket]
 	return node, exists
 }
 
-func (m *mockServerPool[T]) Nodes() iter.Seq2[serverpool.Node[T], int] {
+func (m *mockServerPool[T,O]) Nodes() iter.Seq2[serverpool.Node[T,O], int] {
 	// Implement as needed for tests
-	return func(yield func(serverpool.Node[T], int) bool) {
+	return func(yield func(serverpool.Node[T,O], int) bool) {
 		for bucket, node := range m.nodes {
 			if !yield(node, bucket) {
 				return
@@ -57,9 +54,9 @@ func (m *mockServerPool[T]) Nodes() iter.Seq2[serverpool.Node[T], int] {
 	}
 }
 
-func (m *mockServerPool[T]) Buckets() iter.Seq2[int, serverpool.Node[T]] {
+func (m *mockServerPool[T,O]) Buckets() iter.Seq2[int, serverpool.Node[T,O]] {
 	// Implement as needed for tests
-	return func(yield func(int, serverpool.Node[T]) bool) {
+	return func(yield func(int, serverpool.Node[T,O]) bool) {
 		for bucket, node := range m.nodes {
 			if !yield(bucket, node) {
 				return
@@ -70,10 +67,30 @@ func (m *mockServerPool[T]) Buckets() iter.Seq2[int, serverpool.Node[T]] {
 
 type mockNode struct {
 	ID string
+
+	objects map[string]*serverpool.Object[string, string]
 }
 
 func (n *mockNode) Name() string {
 	return n.ID
+}
+
+func (n *mockNode) AssignObject(obj *serverpool.Object[string, string]) {
+	n.objects[obj.Id] = obj
+}
+
+func (n *mockNode) UnassignObject(obj *serverpool.Object[string, string]) {
+	delete(n.objects, obj.Id)
+}
+
+func (n *mockNode) Objects() iter.Seq[*serverpool.Object[string, string]] {
+	return func(yield func(*serverpool.Object[string, string]) bool) {
+		for _, obj := range n.objects {
+			if !yield(obj) {
+				break
+			}
+		}
+	}
 }
 
 type mockConsistentHasher struct {
@@ -81,8 +98,9 @@ type mockConsistentHasher struct {
 }
 
 func (m *mockConsistentHasher) AddBucket() int {
+	bucket := m.buckets
 	m.buckets++
-	return m.buckets
+	return bucket
 }
 
 func (m *mockConsistentHasher) RemoveBucket(bucket int) int {
@@ -92,7 +110,7 @@ func (m *mockConsistentHasher) RemoveBucket(bucket int) int {
 
 func (m *mockConsistentHasher) GetBucket(key string) int {
 	if m.buckets == 0 {
-		return 0
+		return -1
 	}
 	h := hashing.NewHashFunction(hashing.DefaultHashAlgorithm)
 	return int(h.HashString(key)) % m.buckets
@@ -103,12 +121,12 @@ func (m *mockConsistentHasher) Size() int {
 }
 
 func TestAddNodes(t *testing.T) {
-	//sp := serverpool.NewServerPool[string]()
-	sp := &mockServerPool[string]{nodes: make(map[int]serverpool.Node[string])}
+	//sp := serverpool.NewServerPool[string,string]()
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
 	ch := &mockConsistentHasher{}
-	lb := &loadBalancer[string]{sp: sp, ch: ch}
+	lb := &loadBalancer[string, string]{sp: sp, ch: ch}
 
-	nodes := []serverpool.Node[string]{
+	nodes := []serverpool.Node[string, string]{
 		&mockNode{ID: "node1"},
 		&mockNode{ID: "node2"},
 	}
@@ -137,11 +155,11 @@ func TestAddNodes(t *testing.T) {
 }
 
 func TestAddNodesEmpty(t *testing.T) {
-	sp := &mockServerPool[string]{nodes: make(map[int]serverpool.Node[string])}
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
 	ch := &mockConsistentHasher{}
-	lb := &loadBalancer[string]{sp: sp, ch: ch}
+	lb := &loadBalancer[string,string]{sp: sp, ch: ch}
 
-	err := lb.AddNodes([]serverpool.Node[string]{})
+	err := lb.AddNodes([]serverpool.Node[string,string]{})
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -151,11 +169,11 @@ func TestAddNodesEmpty(t *testing.T) {
 	}
 }
 func TestRemoveNodes(t *testing.T) {
-	sp := &mockServerPool[string]{nodes: make(map[int]serverpool.Node[string])}
+	sp := &mockServerPool[string,string]{nodes: make(map[int]serverpool.Node[string,string])}
 	ch := &mockConsistentHasher{}
-	lb := &loadBalancer[string]{sp: sp, ch: ch}
+	lb := &loadBalancer[string,string]{sp: sp, ch: ch}
 
-	nodes := []serverpool.Node[string]{
+	nodes := []serverpool.Node[string,string]{
 		&mockNode{ID: "node1"},
 		&mockNode{ID: "node2"},
 	}
@@ -178,11 +196,11 @@ func TestRemoveNodes(t *testing.T) {
 }
 
 func TestRemoveNodesEmpty(t *testing.T) {
-	sp := &mockServerPool[string]{nodes: make(map[int]serverpool.Node[string])}
+	sp := &mockServerPool[string,string]{nodes: make(map[int]serverpool.Node[string,string])}
 	ch := &mockConsistentHasher{}
-	lb := &loadBalancer[string]{sp: sp, ch: ch}
+	lb := &loadBalancer[string,string]{sp: sp, ch: ch}
 
-	err := lb.RemoveNodes([]serverpool.Node[string]{})
+	err := lb.RemoveNodes([]serverpool.Node[string,string]{})
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -193,11 +211,11 @@ func TestRemoveNodesEmpty(t *testing.T) {
 }
 
 func TestRemoveNodesMoreThanExist(t *testing.T) {
-	sp := &mockServerPool[string]{nodes: make(map[int]serverpool.Node[string])}
+	sp := &mockServerPool[string,string]{nodes: make(map[int]serverpool.Node[string,string])}
 	ch := &mockConsistentHasher{}
-	lb := &loadBalancer[string]{sp: sp, ch: ch}
+	lb := &loadBalancer[string,string]{sp: sp, ch: ch}
 
-	nodes := []serverpool.Node[string]{
+	nodes := []serverpool.Node[string,string]{
 		&mockNode{ID: "node1"},
 	}
 
@@ -208,7 +226,7 @@ func TestRemoveNodesMoreThanExist(t *testing.T) {
 	}
 
 	// Try to remove more nodes than exist
-	err = lb.RemoveNodes([]serverpool.Node[string]{
+	err = lb.RemoveNodes([]serverpool.Node[string,string]{
 		&mockNode{ID: "node1"},
 		&mockNode{ID: "node2"},
 	})
@@ -222,11 +240,11 @@ func TestRemoveNodesMoreThanExist(t *testing.T) {
 	}
 }
 func TestGetNode(t *testing.T) {
-	sp := &mockServerPool[string]{nodes: make(map[int]serverpool.Node[string])}
+	sp := &mockServerPool[string,string]{nodes: make(map[int]serverpool.Node[string,string])}
 	ch := &mockConsistentHasher{}
-	lb := &loadBalancer[string]{sp: sp, ch: ch}
+	lb := &loadBalancer[string,string]{sp: sp, ch: ch}
 
-	nodes := []serverpool.Node[string]{
+	nodes := []serverpool.Node[string,string]{
 		&mockNode{ID: "node1"},
 		&mockNode{ID: "node2"},
 	}
@@ -265,7 +283,222 @@ func TestGetNode(t *testing.T) {
 		t.Fatalf("expected error, got nil")
 	}
 
-	expectedErr := fmt.Sprintf("node not found for bucket %d", 0)
+	expectedErr := fmt.Sprintf("node not found for bucket %d", -1)
+	if err.Error() != expectedErr {
+		t.Fatalf("expected '%s' error, got %v", expectedErr, err)
+	}
+}
+func TestAddObjects(t *testing.T) {
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
+	ch := &mockConsistentHasher{}
+	lb := &loadBalancer[string, string]{sp: sp, ch: ch, objects: make(map[string]*serverpool.Object[string, string])}
+
+	objects := []*serverpool.Object[string, string]{
+		{Id: "obj1"},
+		{Id: "obj2"},
+	}
+
+	err := lb.AddObjects(objects)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(lb.objects) != 2 {
+		t.Fatalf("expected 2 objects, got %d", len(lb.objects))
+	}
+
+	for _, obj := range objects {
+		if _, exists := lb.objects[obj.Id]; !exists {
+			t.Fatalf("expected object %v to be added", obj)
+		}
+	}
+}
+
+func TestAddObjectsEmpty(t *testing.T) {
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
+	ch := &mockConsistentHasher{}
+	lb := &loadBalancer[string, string]{sp: sp, ch: ch, objects: make(map[string]*serverpool.Object[string, string])}
+
+	err := lb.AddObjects([]*serverpool.Object[string, string]{})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+
+	if err.Error() != "no objects to add" {
+		t.Fatalf("expected 'no objects to add' error, got %v", err)
+	}
+}
+func TestRemoveObjects(t *testing.T) {
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
+	ch := &mockConsistentHasher{}
+	lb := &loadBalancer[string, string]{sp: sp, ch: ch, objects: make(map[string]*serverpool.Object[string, string])}
+
+	objects := []*serverpool.Object[string, string]{
+		{Id: "obj1"},
+		{Id: "obj2"},
+	}
+
+	// Add objects first
+	err := lb.AddObjects(objects)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// Now remove objects
+	err = lb.RemoveObjects(objects)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(lb.objects) != 0 {
+		t.Fatalf("expected 0 objects, got %d", len(lb.objects))
+	}
+}
+
+func TestRemoveObjectsEmpty(t *testing.T) {
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
+	ch := &mockConsistentHasher{}
+	lb := &loadBalancer[string, string]{sp: sp, ch: ch, objects: make(map[string]*serverpool.Object[string, string])}
+
+	err := lb.RemoveObjects([]*serverpool.Object[string, string]{})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+
+	if err.Error() != "no objects to remove" {
+		t.Fatalf("expected 'no objects to remove' error, got %v", err)
+	}
+}
+func TestAssignObject(t *testing.T) {
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
+	ch := &mockConsistentHasher{}
+	lb := &loadBalancer[string, string]{sp: sp, ch: ch, objects: make(map[string]*serverpool.Object[string, string])}
+
+	nodes := []serverpool.Node[string, string]{
+		&mockNode{ID: "node1", objects: make(map[string]*serverpool.Object[string, string])},
+		&mockNode{ID: "node2", objects: make(map[string]*serverpool.Object[string, string])},
+	}
+
+	// Add nodes first
+	err := lb.AddNodes(nodes)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	objects := []*serverpool.Object[string, string]{
+		{Id: "obj1"},
+		{Id: "obj2"},
+	}
+
+	// Add objects to the load balancer
+	err = lb.AddObjects(objects)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// Assign objects to nodes
+	for _, obj := range objects {
+		err = lb.AssignObject(obj)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		// Verify that the object is assigned to a node
+		node, err := lb.GetNode(obj.Name())
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if _, exists := node.(*mockNode).objects[obj.Id]; !exists {
+			t.Fatalf("expected object %v to be assigned to node %v", obj, node)
+		}
+	}
+}
+
+func TestAssignObjectNotFound(t *testing.T) {
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
+	ch := &mockConsistentHasher{}
+	lb := &loadBalancer[string, string]{sp: sp, ch: ch, objects: make(map[string]*serverpool.Object[string, string])}
+
+	obj := &serverpool.Object[string, string]{Id: "obj1"}
+
+	err := lb.AssignObject(obj)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+
+	expectedErr := fmt.Sprintf("%v not found", obj)
+	if err.Error() != expectedErr {
+		t.Fatalf("expected '%s' error, got %v", expectedErr, err)
+	}
+}
+func TestUnassignObject(t *testing.T) {
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
+	ch := &mockConsistentHasher{}
+	lb := &loadBalancer[string, string]{sp: sp, ch: ch, objects: make(map[string]*serverpool.Object[string, string])}
+
+	nodes := []serverpool.Node[string, string]{
+		&mockNode{ID: "node1", objects: make(map[string]*serverpool.Object[string, string])},
+		&mockNode{ID: "node2", objects: make(map[string]*serverpool.Object[string, string])},
+	}
+
+	// Add nodes first
+	err := lb.AddNodes(nodes)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	objects := []*serverpool.Object[string, string]{
+		{Id: "obj1"},
+		{Id: "obj2"},
+	}
+
+	// Add objects to the load balancer
+	err = lb.AddObjects(objects)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// Assign objects to nodes
+	for _, obj := range objects {
+		err = lb.AssignObject(obj)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+	}
+
+	// Unassign objects from nodes
+	for _, obj := range objects {
+		err = lb.UnassignObject(obj)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		// Verify that the object is unassigned from the node
+		node, err := lb.GetNode(obj.Name())
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if _, exists := node.(*mockNode).objects[obj.Id]; exists {
+			t.Fatalf("expected object %v to be unassigned from node %v", obj, node)
+		}
+	}
+}
+
+func TestUnassignObjectNotFound(t *testing.T) {
+	sp := &mockServerPool[string, string]{nodes: make(map[int]serverpool.Node[string, string])}
+	ch := &mockConsistentHasher{}
+	lb := &loadBalancer[string, string]{sp: sp, ch: ch, objects: make(map[string]*serverpool.Object[string, string])}
+
+	obj := &serverpool.Object[string, string]{Id: "obj1"}
+
+	err := lb.UnassignObject(obj)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+
+	expectedErr := fmt.Sprintf("%v not found", obj)
 	if err.Error() != expectedErr {
 		t.Fatalf("expected '%s' error, got %v", expectedErr, err)
 	}
