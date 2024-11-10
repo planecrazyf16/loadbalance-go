@@ -1,9 +1,6 @@
 // Copyright (c) 2024 Rishabh Parekh
-// MIT License
-
 // Use of this source code is governed by an MIT license that can be
 // found in the LICENSE file.
-
 
 package main
 
@@ -26,6 +23,9 @@ const (
 	MAP
 	SHOWNODES
 	SHOWBUCKETS
+	ADDWORK
+	REMWORK
+	SHOWWORK
 	EXIT
 )
 
@@ -33,36 +33,28 @@ var r *rand.Rand
 var addrs map[netip.Addr]struct{}
 
 // Add the number of nodes specified to the load balancer
-func addNodes(lb LoadBalancer[netip.Addr], numNodes int) {
+func addNodes(lb LoadBalancer[netip.Addr, int], numNodes int) {
 	var bs [4]byte
-	var nodes []serverpool.Node[netip.Addr]
+	var nodes []serverpool.Node[netip.Addr, int]
 
 	for i := 0; i < numNodes; i++ {
 		// Generate a random IP address for each node in range [0, numNodes)
-		addr := r.Intn(100000)
-		if addr == 0 {
-			continue
-		}
+		addr := r.Intn(100000) + 1
 
 		// Convert to byte array (little endian)
 		binary.BigEndian.PutUint32(bs[:], uint32(addr))
 		fmt.Println("Adding node with address:", bs)
 
-		node := NewServerNodeBytes(bs)
-		nodes = append(nodes, node)
+		node := NewServerNodeBytes[int](bs)
+		nodes = append(nodes, &node)
 
 		addrs[node.Name()] = struct{}{}
 	}
 	lb.AddNodes(nodes)
 }
 
-// Delete the number of nodes specified from the load balancer
-// Use of this source code is governed by an MIT license that can be
-// found in the LICENSE file.
-
-
 // Add a node with given address
-func addNode(lb LoadBalancer[netip.Addr], address string) {
+func addNode(lb LoadBalancer[netip.Addr, int], address string) {
 	ip, err := netip.ParseAddr(address)
 	if err != nil {
 		fmt.Println("Invalid address")
@@ -76,17 +68,18 @@ func addNode(lb LoadBalancer[netip.Addr], address string) {
 
 	fmt.Println("Adding node with address:", ip)
 
-	lb.AddNodes([]serverpool.Node[netip.Addr]{NewServerNode(ip)})
+	node := NewServerNode[int](ip)
+	lb.AddNodes([]serverpool.Node[netip.Addr, int]{&node})
 
 	addrs[ip] = struct{}{}
 }
 
 // Delete a node with given address
-func delNode(lb LoadBalancer[netip.Addr], address string) {
+func delNode(lb LoadBalancer[netip.Addr,int], address string) {
 	ip, err := netip.ParseAddr(address)
 	if err != nil {
 		fmt.Println("Invalid address")
-		os.Exit(1)
+		return
 	}
 
 	if _, ok := addrs[ip]; !ok {
@@ -96,9 +89,49 @@ func delNode(lb LoadBalancer[netip.Addr], address string) {
 
 	fmt.Println("Deleting node with address:", ip)
 
-	lb.RemoveNodes([]serverpool.Node[netip.Addr]{NewServerNode(ip)})
+	node := NewServerNode[int](ip)
+	lb.RemoveNodes([]serverpool.Node[netip.Addr, int]{&node})
 
 	delete(addrs, ip)
+}
+
+// Add work to the load balancer
+func addWork(lb LoadBalancer[netip.Addr, int], id string) {
+	objid, err := strconv.Atoi(id)
+	if err != nil {
+		fmt.Println("Invalid object ID")
+		return
+	}
+
+	obj := NewWorkObject[netip.Addr](objid)
+
+	if err := lb.AddObjects([]*serverpool.Object[netip.Addr, int]{&obj.Object}); err != nil {
+		fmt.Println("Error adding work:", err)
+		return
+	}
+	if err := lb.AssignObject(&obj.Object); err != nil {
+		fmt.Println("Error assigning work:", err)
+		return
+	}	
+}
+
+// Remove work from the load balancer
+func remWork(lb LoadBalancer[netip.Addr, int], id string) {
+	objid, err := strconv.Atoi(id)
+	if err != nil {
+		fmt.Println("Invalid object ID")
+		return
+	}
+
+	if err := lb.UnassignObject(&serverpool.Object[netip.Addr, int]{Id: objid}); err != nil {
+		fmt.Println("Error unassigning work:", err)
+		return
+	}
+
+	if err := lb.RemoveObjects([]*serverpool.Object[netip.Addr, int]{{Id: objid}}); err != nil {
+		fmt.Println("Error removing work:", err)
+		return
+	}
 }
 
 func readNewLine(reader *bufio.Reader) string {
@@ -109,7 +142,7 @@ func readNewLine(reader *bufio.Reader) string {
 }
 
 func main() {
-	lb := NewLoadBalancer[netip.Addr]()
+	lb := NewLoadBalancer[netip.Addr,int]()
 	r = rand.New(rand.NewSource(time.Now().UnixNano()))
 	addrs = make(map[netip.Addr]struct{})
 
@@ -117,13 +150,17 @@ func main() {
 
 	op := 0
 	for op < EXIT {
+		fmt.Println()
 		fmt.Println("1. Add nodes")
 		fmt.Println("2. Add node")
 		fmt.Println("3. Delete node")
 		fmt.Println("4. Map Key")
 		fmt.Println("5. Show Nodes")
 		fmt.Println("6. Show Buckets")
-		fmt.Println("7. Exit")
+		fmt.Println("7. Add Work")
+		fmt.Println("8. Remove Work")
+		fmt.Println("9. Show Work")
+		fmt.Println("10. Exit")
 		fmt.Print("Operation: ")
 		text := readNewLine(reader)
 
@@ -148,21 +185,21 @@ func main() {
 
 		case ADDNODE:
 			fmt.Print("Enter address of node to add: ")
-		text := readNewLine(reader)
+			text := readNewLine(reader)
 
 			fmt.Println("Adding node", text)
 			addNode(lb, text)
 
 		case DELNODE:
 			fmt.Print("Enter address of node to delete: ")
-		text := readNewLine(reader)
+			text := readNewLine(reader)
 
 			fmt.Println("Deleting node", text)
 			delNode(lb, text)
 
 		case MAP:
 			fmt.Print("Enter key to map: ")
-		key := readNewLine(reader)
+			key := readNewLine(reader)
 
 			node, err := lb.GetNode(key)
 			if err != nil {
@@ -174,13 +211,32 @@ func main() {
 		case SHOWNODES:
 			fmt.Println("Nodes in the cluster:")
 			for node, bucket := range lb.Nodes() {
-				fmt.Printf("Node: %-15s Bucket: %d", node, bucket)
+				fmt.Printf("Node: %-15s Bucket: %d\n", node, bucket)
 			}
 
 		case SHOWBUCKETS:
 			fmt.Println("Buckets in the cluster:")
 			for bucket, node := range lb.Buckets() {
-				fmt.Printf("Bucket: %d Node: %-15s", bucket, node)
+				fmt.Printf("Bucket: %d Node: %-15s\n", bucket, node)
+			}
+		case ADDWORK:
+			fmt.Print("Enter id of work object to add: ")
+			text := readNewLine(reader)
+
+			fmt.Println("Adding work", text)
+			addWork(lb, text)
+
+		case REMWORK:
+			fmt.Print("Enter id of work object to remove: ")
+			text := readNewLine(reader)
+
+			fmt.Println("Removing work", text)
+			remWork(lb, text)
+
+		case SHOWWORK:
+			fmt.Println("Work assigned to nodes:")
+			for obj := range lb.Objects() {
+				fmt.Println(obj, "==>", *obj.Node())
 			}
 
 		case EXIT:

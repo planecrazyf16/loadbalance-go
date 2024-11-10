@@ -1,11 +1,6 @@
 // Copyright (c) 2024 Rishabh Parekh
-// MIT License
-
 // Use of this source code is governed by an MIT license that can be
 // found in the LICENSE file.
-
-
-
 
 // Implementation of JunpHash consistent hashing algorithm.
 package consistenthash
